@@ -66,5 +66,7 @@ def chat():
 def healthcheck():
     return jsonify({'status': 'healthy'})
 
+# Remove or modify this part
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 3000))) 
+    # Only use this for local development
+    app.run(debug=True) 
