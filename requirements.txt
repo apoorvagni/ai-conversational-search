@@ -2,6 +2,7 @@ aiohttp==3.11.12
 beautifulsoup4==4.12.3
 duckduckgo_search==7.3.2
 Flask==3.1.0
+flask-cors==4.0.0
 langchain==0.3.18
 langchain-community==0.3.17
 langchain-core==0.3.34

@@ -1,10 +1,24 @@
 from flask import Flask, request, jsonify, Response, stream_with_context
+from flask_cors import CORS
 from webSearch_API import WebSearchChat
 from langchain.schema import HumanMessage
 import os
 import json
 
 app = Flask(__name__)
+# Enable CORS for all routes
+CORS(app, resources={
+    r"/api/*": {
+        "origins": [
+            "https://*.vercel.app",
+            "http://localhost:3000"  # For local development
+        ],
+        "methods": ["POST", "GET", "OPTIONS"],
+        "allow_headers": "*",
+        "expose_headers": "*",
+    }
+})
+
 chat_bot = None  # Initialize as None at module level
 
 @app.route('/api/healthcheck', methods=['GET'])
