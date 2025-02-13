@@ -5,7 +5,7 @@ build:
     build:
       - pip install -r requirements.txt
 run:
-  runtime-version: 3.9.16
+  runtime-version: 3.11.11
   command: gunicorn --bind 0.0.0.0:3000 app:app
   network:
     port: 3000
