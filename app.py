@@ -1,13 +1,27 @@
 from flask import Flask, request, jsonify, Response, stream_with_context
 from webSearch_API import WebSearchChat
+from langchain.schema import HumanMessage
 import os
 import json
 
 app = Flask(__name__)
-chat_bot = WebSearchChat()
+chat_bot = None  # Initialize as None at module level
+
+@app.route('/api/healthcheck', methods=['GET'])
+def healthcheck():
+    return jsonify({'status': 'healthy'})
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
+    global chat_bot
+    
+    # Initialize chat_bot only when needed for chat endpoint
+    if chat_bot is None:
+        try:
+            chat_bot = WebSearchChat()
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 500
+
     try:
         data = request.json
         user_input = data.get('message', '')
@@ -36,7 +50,7 @@ def chat():
             prompt = user_input
             urls = None
 
-        messages = chat_bot.conversation + [chat_bot.HumanMessage(content=prompt)]
+        messages = chat_bot.conversation + [HumanMessage(content=prompt)]
 
         def generate():
             full_response = ""
@@ -61,10 +75,6 @@ def chat():
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-@app.route('/api/healthcheck', methods=['GET'])
-def healthcheck():
-    return jsonify({'status': 'healthy'})
 
 # Remove or modify this part
 if __name__ == '__main__':
