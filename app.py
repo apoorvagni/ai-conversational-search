@@ -94,9 +94,9 @@ def chat():
             
             while retry_count < max_retries:
                 try:
-                    # Add timeout to prevent hanging
-                    for chunk in chat_bot.client.stream(messages, timeout=30):
-                        if chunk and chunk.content:  # Add null check
+                    # Remove timeout parameter from stream call
+                    for chunk in chat_bot.client.stream(messages):
+                        if chunk and chunk.content:
                             buffer += chunk.content
                             if len(buffer) >= 500:
                                 yield f"data: {json.dumps({'chunk': buffer})}\n\n"
@@ -110,7 +110,6 @@ def chat():
                         logger.error(error_msg)
                         yield f"data: {json.dumps({'error': error_msg})}\n\n"
                         return
-                    # Add small delay before retry
                     time.sleep(1)
                     continue
             
