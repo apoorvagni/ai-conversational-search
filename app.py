@@ -4,6 +4,10 @@ from webSearch_API import WebSearchChat
 from langchain.schema import HumanMessage
 import os
 import json
+from functools import lru_cache
+from flask_compress import Compress
+import time
+import logging
 
 app = Flask(__name__)
 # Enable CORS for all routes
@@ -16,7 +20,23 @@ CORS(app, resources={
     }
 })
 
+# Add these near the top after creating the Flask app
+app.config['PROPAGATE_EXCEPTIONS'] = True
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
+app.config['JSON_SORT_KEYS'] = False  # Reduces JSON processing overhead
+
+# Add after creating Flask app
+Compress(app)
+
 chat_bot = None  # Initialize as None at module level
+
+headers = {
+    'User-Agent': os.getenv('USER_AGENT'),
+    'Accept': 'text/html,*/*;q=0.9',
+    'Accept-Encoding': 'gzip',
+}
+
+logger = logging.getLogger(__name__)
 
 @app.route('/api/healthcheck', methods=['GET'])
 def healthcheck():
@@ -63,20 +83,45 @@ def chat():
 
         messages = chat_bot.conversation + [HumanMessage(content=prompt)]
 
+        # Add this to the chat() function before processing
+        if len(chat_bot.conversation) > 40:
+            chat_bot.conversation = chat_bot.conversation[-10:]  # Keep only last 5 exchanges
+
         def generate():
-            full_response = ""
-            for chunk in chat_bot.client.stream(messages):
-                if chunk.content:
-                    full_response += chunk.content
-                    # Send the chunk as a Server-Sent Event
-                    yield f"data: {json.dumps({'chunk': chunk.content})}\n\n"
+            buffer = ""
+            retry_count = 0
+            max_retries = 3
             
-            # Update conversation history after full response
-            if full_response:
+            while retry_count < max_retries:
+                try:
+                    # Remove timeout parameter from stream call
+                    for chunk in chat_bot.client.stream(messages):
+                        if chunk and chunk.content:
+                            buffer += chunk.content
+                            if len(buffer) >= 500:
+                                yield f"data: {json.dumps({'chunk': buffer})}\n\n"
+                                buffer = ""
+                    break  # Success, exit the retry loop
+                except Exception as e:
+                    logger.error(f"Streaming error (attempt {retry_count + 1}/{max_retries}): {str(e)}")
+                    retry_count += 1
+                    if retry_count == max_retries:
+                        error_msg = f"Failed after {max_retries} attempts: {str(e)}"
+                        logger.error(error_msg)
+                        yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                        return
+                    time.sleep(1)
+                    continue
+            
+            # Send any remaining buffer
+            if buffer:
+                yield f"data: {json.dumps({'chunk': buffer})}\n\n"
+            
+            # Update conversation and send sources
+            if buffer:
                 chat_bot.append_to_conversation('user', prompt)
-                chat_bot.append_to_conversation('assistant', full_response)
+                chat_bot.append_to_conversation('assistant', buffer)
             
-            # Send the sources as the final event
             yield f"data: {json.dumps({'sources': urls if urls else None})}\n\n"
 
         return Response(
@@ -86,6 +131,12 @@ def chat():
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.teardown_appcontext
+def cleanup(error):
+    global chat_bot
+    if chat_bot and hasattr(chat_bot, 'session'):
+        chat_bot.session.close()
 
 # Remove or modify this part
 if __name__ == '__main__':

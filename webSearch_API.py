@@ -5,6 +5,10 @@ import logging
 import os
 from langchain_mistralai.chat_models import ChatMistralAI
 from langchain.schema import HumanMessage, AIMessage
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import time
+from functools import partial
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +38,16 @@ class WebSearchChat:
                 'User-Agent': os.getenv('USER_AGENT'),
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             }
+            self.session = requests.Session()
+            retries = Retry(total=3,
+                           backoff_factor=0.5,
+                           status_forcelist=[500, 502, 503, 504])
+            adapter = HTTPAdapter(max_retries=retries)
+            self.session.mount('http://', adapter)
+            self.session.mount('https://', adapter)
+            self.session.headers.update(self.headers)
+            # Add default timeout for all requests
+            self.session.request = partial(self.session.request, timeout=(10, 60))
         except Exception as e:
             logger.error(f"Error initializing WebSearchChat: {str(e)}")
             raise e
@@ -41,15 +55,8 @@ class WebSearchChat:
     def fetch_and_parse_url(self, url):
         """Custom method to fetch and parse URL content"""
         try:
-            headers = {
-                'User-Agent': os.getenv('USER_AGENT'),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-            }
-            
-            response = requests.get(url, headers=headers, timeout=10)
+            # Use session instead of requests.get
+            response = self.session.get(url, timeout=(10, 30))
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
