@@ -13,3 +13,5 @@ requests==2.32.3
 flask-compress==1.14
 urllib3==2.2.1
 retry==0.9.2
+sumy==0.11.0
+nltk==3.8.1
