@@ -9,6 +9,12 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import time
 from functools import partial
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.documents import Document
+from langchain.prompts import ChatPromptTemplate
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Tuple
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -91,54 +97,91 @@ class WebSearchChat:
             logger.error(f"Error fetching {url}: {str(e)}")
             return ""
 
+    def summarize_content(self, content: str) -> str:
+        """Summarize content using LangChain's summarization"""
+        try:
+            # Split content into smaller chunks
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=100,
+                length_function=len,
+                separators=["\n\n", "\n", " ", ""]
+            )
+            
+            chunks = text_splitter.split_text(content)
+            docs = [Document(page_content=chunk) for chunk in chunks]
+            
+            # Create summarization prompt with correct variable name
+            prompt = ChatPromptTemplate.from_template("""
+                Summarize the following text in a concise manner, focusing on key information:
+                {context}
+                
+                Summary:
+            """)
+            
+            # Create and run chain
+            chain = create_stuff_documents_chain(
+                self.client,
+                prompt,
+            )
+            
+            # Pass documents directly in the invoke
+            result = chain.invoke({
+                "context": docs
+            })
+            
+            return result["answer"]
+        except Exception as e:
+            logger.error(f"Error in summarization: {str(e)}")
+            return content[:2000]  # Fallback to truncation
+
+    def process_url(self, url: str) -> Tuple[str, str]:
+        """Process single URL with summarization - synchronous version"""
+        try:
+            content = self.fetch_and_parse_url(url)
+            if len(content) > 2000:  # Threshold for summarization
+                content = self.summarize_content(content)
+            return url, content
+        except Exception as e:
+            logger.error(f"Error processing URL {url}: {str(e)}")
+            return url, ""
+
     def process_web_search(self, query: str, num_results: int = 5):
         try:
-            logger.info(f"Processing web search for: {query}")
             search_results = self.search.run(query)
-            
-            # Parse results to extract URLs and snippets
             urls = []
             content = []
             
             if isinstance(search_results, str):
                 entries = search_results.split('link: ')
                 
-                for entry in entries[1:]:  # Skip first empty entry
-                    lines = entry.split('\n')
-                    url = lines[0].split(',')[0].strip()
+                # Process URLs in parallel using ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    futures = []
+                    for entry in entries[1:]:
+                        url = entry.split('\n')[0].split(',')[0].strip()
+                        if url and len(urls) < num_results:
+                            urls.append(url)
+                            # Use the synchronous version of process_url
+                            futures.append(executor.submit(self.process_url, url))
                     
-                    if url and len(urls) < num_results:  # Add this condition
-                        urls.append(url)
+                    # Collect results from futures
+                    for future in futures:
                         try:
-                            # Directly fetch and add content
-                            logger.info(f"Fetching content from URL: {url}")
-                            page_content = self.fetch_and_parse_url(url)
+                            url, page_content = future.result(timeout=30)  # Add timeout
                             if page_content:
-                                logger.info(f"Successfully fetched content from {url}")
                                 content.append(f"Source: {url}\n{page_content}")
-                            else:
-                                logger.warning(f"No content retrieved from {url}")
-                                
-                            # Add the snippet too
-                            prev_entry = entries[entries.index(entry) - 1]
-                            if 'snippet: ' in prev_entry:
-                                snippet = prev_entry.split('snippet: ')[1].split(',')[0].strip()
-                                content.append(f"Snippet from {url}:\n{snippet}")
-                                
                         except Exception as e:
-                            logger.error(f"Error processing URL {url}: {str(e)}")
+                            logger.error(f"Error processing future: {str(e)}")
                             continue
-
-            if not content:
-                logger.warning("No content found from search results")
-                return None, None
             
-            # Join all content with separators
-            context = "\n\n---\n\n".join(content)
-            logger.info(f"Final context length: {len(context)} chars")
-            logger.info(f"Final URLs collected: {urls}")
+            # Final summarization of combined content
+            combined_content = "\n\n---\n\n".join(content)
+            if len(combined_content) > 4000:
+                combined_content = self.summarize_content(combined_content)
             
-            return context, urls
+            logger.info(f"Processed {len(urls)} URLs successfully")
+            return combined_content, urls
             
         except Exception as e:
             logger.error(f"Error in web search processing: {str(e)}", exc_info=True)
