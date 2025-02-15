@@ -7,16 +7,7 @@ from langchain_mistralai.chat_models import ChatMistralAI
 from langchain.schema import HumanMessage, AIMessage
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import time
 from functools import partial
-from sumy.parsers.plaintext import PlaintextParser
-from sumy.nlp.tokenizers import Tokenizer
-from sumy.summarizers.lsa import LsaSummarizer
-from sumy.nlp.stemmers import Stemmer
-from sumy.utils import get_stop_words
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains.combine_documents.stuff import StuffDocumentsChain
-from langchain.chains.llm import LLMChain
 from langchain.prompts import PromptTemplate
 import nltk
 import asyncio
@@ -62,17 +53,19 @@ class WebSearchChat:
             # Add default timeout for all requests
             self.session.request = partial(self.session.request, timeout=(10, 60))
             
-            # Download NLTK data once during initialization
+            # Download only the absolute minimum NLTK data needed
             try:
-                nltk.data.find('tokenizers/punkt')
-            except LookupError:
-                nltk.download('punkt', quiet=True)
+                # Create tmp directory if it doesn't exist
+                os.makedirs('/tmp/nltk_data', exist_ok=True)
+                
+                # Download the complete punkt tokenizer
+                nltk.download('punkt', download_dir='/tmp/nltk_data', quiet=True)
+                
+                # Add the tmp directory to NLTK's data path
+                nltk.data.path.append('/tmp/nltk_data')
+            except Exception as e:
+                logger.error(f"Error downloading NLTK data: {str(e)}")
             
-            # Initialize text splitter for chunking
-            self.text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=2000,
-                chunk_overlap=200
-            )
         except Exception as e:
             logger.error(f"Error initializing WebSearchChat: {str(e)}")
             raise e
@@ -116,29 +109,17 @@ class WebSearchChat:
             logger.error(f"Error fetching {url}: {str(e)}")
             return ""
 
-    def sumy_summarize(self, text, sentences_count=10):
-        """First-stage summarization using sumy"""
-        parser = PlaintextParser.from_string(text, Tokenizer("english"))
-        stemmer = Stemmer("english")
-        summarizer = LsaSummarizer(stemmer)
-        summarizer.stop_words = get_stop_words("english")
-        
-        summary = [str(sentence) for sentence in summarizer(parser.document, sentences_count)]
-        return " ".join(summary)
-
-    def langchain_summarize(self, text):
-        """Second-stage summarization using LangChain"""
-        prompt_template = """
-        Summarize the following text concisely while preserving key information:
-        
-        {text}
-        
-        Summary:"""
-        
-        prompt = PromptTemplate(template=prompt_template, input_variables=["text"])
-        chain = LLMChain(llm=self.client, prompt=prompt)
-        
-        return chain.run(text=text)
+    def simple_summarize(self, text, max_sentences=5):
+        """Simple summarization without heavy dependencies"""
+        # Split into sentences using nltk's punkt tokenizer
+        try:
+            sentences = nltk.sent_tokenize(text)
+            # Return first max_sentences sentences
+            return " ".join(sentences[:max_sentences])
+        except Exception as e:
+            logger.error(f"Error in simple summarization: {str(e)}")
+            # Fallback to simple length-based truncation
+            return text[:1000] + "..."
 
     async def fetch_url_async(self, session, url):
         try:
@@ -174,7 +155,7 @@ class WebSearchChat:
             element.decompose()
         
         text = soup.get_text(separator='\n', strip=True)
-        summary = self.sumy_summarize(text[:4000], sentences_count=5)  # Reduced sentences
+        summary = self.simple_summarize(text[:4000], max_sentences=5)
         return f"Source: {url}\n{summary}"
 
     def process_web_search(self, query: str, num_results: int = 5):
