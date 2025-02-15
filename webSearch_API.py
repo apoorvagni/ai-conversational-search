@@ -15,6 +15,9 @@ from langchain_core.documents import Document
 from langchain.prompts import ChatPromptTemplate
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple
+from ratelimit import limits, sleep_and_retry
+import asyncio
+from aiohttp import ClientSession, ClientTimeout
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -54,9 +57,54 @@ class WebSearchChat:
             self.session.headers.update(self.headers)
             # Add default timeout for all requests
             self.session.request = partial(self.session.request, timeout=(10, 60))
+            # Add rate limiter for Mistral API
+            self.last_api_call = 0
+            self.api_call_interval = 1.1  # Slightly more than 1 second to be safe
         except Exception as e:
             logger.error(f"Error initializing WebSearchChat: {str(e)}")
             raise e
+
+    def wait_for_rate_limit(self):
+        """Ensure we respect the 1 RPS rate limit"""
+        current_time = time.time()
+        time_since_last_call = current_time - self.last_api_call
+        if time_since_last_call < self.api_call_interval:
+            time.sleep(self.api_call_interval - time_since_last_call)
+        self.last_api_call = time.time()
+
+    async def fetch_url_async(self, session: ClientSession, url: str) -> Tuple[str, str]:
+        """Asynchronous URL fetching"""
+        try:
+            timeout = ClientTimeout(total=30)
+            async with session.get(url, timeout=timeout) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # Remove unwanted elements
+                    for element in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+                        element.decompose()
+                    
+                    # First try to find article content
+                    article = soup.find('article')
+                    if article:
+                        text = article.get_text(separator='\n', strip=True)
+                        if len(text) > 100:
+                            return url, text[:4000]
+                    
+                    # If no article, get main content
+                    content = soup.find_all(['main', 'div', 'p'])
+                    text = '\n'.join(tag.get_text(strip=True) for tag in content if len(tag.get_text(strip=True)) > 50)
+                    return url, text[:4000]
+        except Exception as e:
+            logger.error(f"Error fetching {url}: {str(e)}")
+        return url, ""
+
+    async def process_urls_async(self, urls: List[str]) -> List[Tuple[str, str]]:
+        """Process multiple URLs asynchronously"""
+        async with ClientSession(headers=self.headers) as session:
+            tasks = [self.fetch_url_async(session, url) for url in urls]
+            return await asyncio.gather(*tasks)
 
     def fetch_and_parse_url(self, url):
         """Custom method to fetch and parse URL content"""
@@ -100,6 +148,7 @@ class WebSearchChat:
     def summarize_content(self, content: str) -> str:
         """Summarize content using LangChain's summarization"""
         try:
+            self.wait_for_rate_limit()  # Add rate limiting
             # Split content into smaller chunks
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=1000,
@@ -125,12 +174,13 @@ class WebSearchChat:
                 prompt,
             )
             
-            # Pass documents directly in the invoke
+            # Get the result and return it directly since it's already a string
             result = chain.invoke({
                 "context": docs
             })
             
-            return result["answer"]
+            return result  # Remove ["answer"] indexing since result is already a string
+
         except Exception as e:
             logger.error(f"Error in summarization: {str(e)}")
             return content[:2000]  # Fallback to truncation
@@ -150,34 +200,29 @@ class WebSearchChat:
         try:
             search_results = self.search.run(query)
             urls = []
-            content = []
             
             if isinstance(search_results, str):
                 entries = search_results.split('link: ')
-                
-                # Process URLs in parallel using ThreadPoolExecutor
-                with ThreadPoolExecutor(max_workers=3) as executor:
-                    futures = []
-                    for entry in entries[1:]:
-                        url = entry.split('\n')[0].split(',')[0].strip()
-                        if url and len(urls) < num_results:
-                            urls.append(url)
-                            # Use the synchronous version of process_url
-                            futures.append(executor.submit(self.process_url, url))
-                    
-                    # Collect results from futures
-                    for future in futures:
-                        try:
-                            url, page_content = future.result(timeout=30)  # Add timeout
-                            if page_content:
-                                content.append(f"Source: {url}\n{page_content}")
-                        except Exception as e:
-                            logger.error(f"Error processing future: {str(e)}")
-                            continue
+                urls = [entry.split('\n')[0].split(',')[0].strip() 
+                       for entry in entries[1:] 
+                       if entry.strip()][:num_results]
+            
+            # Use asyncio to fetch URLs concurrently
+            results = asyncio.run(self.process_urls_async(urls))
+            
+            # Filter out empty results and combine content
+            content = []
+            for url, page_content in results:
+                if page_content:
+                    if len(page_content) > 2000:
+                        self.wait_for_rate_limit()  # Rate limit before summarization
+                        page_content = self.summarize_content(page_content)
+                    content.append(f"Source: {url}\n{page_content}")
             
             # Final summarization of combined content
             combined_content = "\n\n---\n\n".join(content)
             if len(combined_content) > 4000:
+                self.wait_for_rate_limit()  # Rate limit before final summarization
                 combined_content = self.summarize_content(combined_content)
             
             logger.info(f"Processed {len(urls)} URLs successfully")

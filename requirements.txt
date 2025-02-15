@@ -13,4 +13,5 @@ requests==2.32.3
 flask-compress==1.14
 urllib3==2.2.1
 retry==0.9.2
-langchain-text-splitters==0.0.1
+langchain-text-splitters>=0.3.6,<1.0.0
+ratelimit==3.1.0
