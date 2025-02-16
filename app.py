@@ -46,7 +46,6 @@ def healthcheck():
 def chat():
     global chat_bot
     
-    # Initialize chat_bot only when needed for chat endpoint
     if chat_bot is None:
         try:
             chat_bot = WebSearchChat()
@@ -60,11 +59,11 @@ def chat():
         if not user_input:
             return jsonify({'error': 'No message provided'}), 400
 
-        # Handle web search queries
+        # Handle web search
+        urls = None
         if user_input.lower().startswith("search: "):
             search_query = user_input[8:].strip()
             context, urls = chat_bot.process_web_search(search_query)
-            
             if context and urls:
                 prompt = f"""Based on the following web search results, please provide a detailed analysis of: {search_query}
 
@@ -75,54 +74,33 @@ def chat():
                 1. Covers all major points from the sources
                 2. Includes specific details and examples
                 3. Maintains factual accuracy"""
+                # For search queries, only use the current prompt without history
+                messages = [HumanMessage(content=prompt)]
             else:
                 prompt = user_input
+                messages = chat_bot.conversation + [HumanMessage(content=prompt)]
         else:
             prompt = user_input
-            urls = None
-
-        messages = chat_bot.conversation + [HumanMessage(content=prompt)]
-
-        # Add this to the chat() function before processing
-        if len(chat_bot.conversation) > 40:
-            chat_bot.conversation = chat_bot.conversation[-10:]  # Keep only last 5 exchanges
+            # For normal chat, include conversation history
+            messages = chat_bot.conversation + [HumanMessage(content=prompt)]
 
         def generate():
-            buffer = ""
-            retry_count = 0
-            max_retries = 3
-            
-            while retry_count < max_retries:
-                try:
-                    # Remove timeout parameter from stream call
-                    for chunk in chat_bot.client.stream(messages):
-                        if chunk and chunk.content:
-                            buffer += chunk.content
-                            if len(buffer) >= 500:
-                                yield f"data: {json.dumps({'chunk': buffer})}\n\n"
-                                buffer = ""
-                    break  # Success, exit the retry loop
-                except Exception as e:
-                    logger.error(f"Streaming error (attempt {retry_count + 1}/{max_retries}): {str(e)}")
-                    retry_count += 1
-                    if retry_count == max_retries:
-                        error_msg = f"Failed after {max_retries} attempts: {str(e)}"
-                        logger.error(error_msg)
-                        yield f"data: {json.dumps({'error': error_msg})}\n\n"
-                        return
-                    time.sleep(1)
-                    continue
-            
-            # Send any remaining buffer
-            if buffer:
-                yield f"data: {json.dumps({'chunk': buffer})}\n\n"
-            
-            # Update conversation and send sources
-            if buffer:
-                chat_bot.append_to_conversation('user', prompt)
-                chat_bot.append_to_conversation('assistant', buffer)
-            
-            yield f"data: {json.dumps({'sources': urls if urls else None})}\n\n"
+            try:
+                response_content = ""
+                for chunk in chat_bot.client.stream(messages):
+                    if chunk and chunk.content:
+                        yield f"data: {json.dumps({'chunk': chunk.content})}\n\n"
+                        response_content += chunk.content
+                
+                if response_content:
+                    chat_bot.append_to_conversation('user', prompt)
+                    chat_bot.append_to_conversation('assistant', response_content)
+                
+                yield f"data: {json.dumps({'sources': urls if urls else None})}\n\n"
+                
+            except Exception as e:
+                logger.error(f"Streaming error: {str(e)}")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
         return Response(
             stream_with_context(generate()),
