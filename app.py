@@ -65,24 +65,25 @@ def chat():
             search_query = user_input[8:].strip()
             context, urls = chat_bot.process_web_search(search_query)
             if context and urls:
-                prompt = f"""Based on the following web search results, please provide a detailed analysis of: {search_query}
-
-                Web Search Context:
+                prompt = f"""Using the web context below, craft a detailed response to: {search_query}
+                
+                Web Context:
                 {context}
-
-                Please provide a comprehensive answer that:
-                1. Covers all major points from the sources
-                2. Includes specific details and examples
-                3. Maintains factual accuracy"""
-                # For search queries, only use the current prompt without history
-                messages = [HumanMessage(content=prompt)]
+                
+                Response requirements:
+                - First paragraph: Direct, comprehensive answer
+                - Subsequent sections: Break down key aspects using natural subheadings
+                - Include relevant details like dates/numbers when available
+                - Use bullet points or numbered lists where appropriate
+                - Never mention "web results" or sources"""
             else:
                 prompt = user_input
-                messages = chat_bot.conversation + [HumanMessage(content=prompt)]
         else:
             prompt = user_input
-            # For normal chat, include conversation history
-            messages = chat_bot.conversation + [HumanMessage(content=prompt)]
+
+        # Always include last 3 exchanges (6 messages) from conversation history
+        recent_conversation = chat_bot.conversation[-6:] if len(chat_bot.conversation) > 6 else chat_bot.conversation
+        messages = recent_conversation + [HumanMessage(content=prompt)]
 
         def generate():
             try:
