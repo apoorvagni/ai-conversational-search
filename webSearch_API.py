@@ -4,7 +4,7 @@ import requests
 import logging
 import os
 from langchain_mistralai.chat_models import ChatMistralAI
-from langchain.schema import HumanMessage, AIMessage
+from langchain.schema import HumanMessage, AIMessage, SystemMessage
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from functools import partial
@@ -20,7 +20,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class WebSearchChat:
-    MODEL_NAME = "mistral-small"
+    # Mistral AI model list: https://docs.mistral.ai/getting-started/models/models_overview/
+    # Smallest Free model: mistral-small
+    # Largest Free model: open-mistral-nemo
+    MODEL_NAME = "mistral-small-latest"
     
     def __init__(self):
         # Initialize Mistral client using LangChain's ChatMistralAI
@@ -250,9 +253,9 @@ class WebSearchChat:
             self.conversation.append(HumanMessage(content=content))
         elif role == 'assistant':
             self.conversation.append(AIMessage(content=content))
-        # Keep only last 10 exchanges (20 messages)
-        if len(self.conversation) > 20:
-            self.conversation = self.conversation[-20:]
+        # Keep only last 3 exchanges (6 messages)
+        if len(self.conversation) > 6:
+            self.conversation = self.conversation[-6:]
 
     def chat(self):
         print("Web-enhanced Chat started (type 'exit' to end, 'search: your query' to search web)")
@@ -288,7 +291,11 @@ class WebSearchChat:
                     prompt = user_input
 
                 # Create messages list with conversation history
-                messages = self.conversation + [HumanMessage(content=prompt)]
+                messages = [
+                    SystemMessage(content="You are a helpful assistant. Use previous messages for context when relevant."),
+                    *self.conversation,
+                    HumanMessage(content=prompt)
+                ]
 
                 print("\nAssistant:", end=" ", flush=True)
                 
