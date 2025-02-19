@@ -50,6 +50,7 @@ def chat():
         try:
             chat_bot = WebSearchChat()
         except ValueError as e:
+            logger.error(f"Failed to initialize chat bot: {str(e)}")
             return jsonify({'error': str(e)}), 500
 
     try:
@@ -59,26 +60,34 @@ def chat():
         if not user_input:
             return jsonify({'error': 'No message provided'}), 400
 
-        # Handle web search
+        # Log the classification result
+        needs_search = chat_bot.classify_query_needs_search(user_input)
+        logger.info(f"Query '{user_input}' needs search: {needs_search}")
+
+        # Handle web search if needed
         urls = None
-        if user_input.lower().startswith("search: "):
-            search_query = user_input[8:].strip()
+        if needs_search:
+            search_query = user_input  # Use the original query for search
             context, urls = chat_bot.process_web_search(search_query)
+            logger.info(f"Web search results - Context found: {bool(context)}, URLs found: {bool(urls)}")
             if context and urls:
-                prompt = f"""Using the web context below, craft a detailed response to: {search_query}
+                logger.info(f"Using web search context with {len(urls)} sources")
+
+                prompt = f"""Craft a detailed response to: {search_query}
                 
-                Web Context:
+                Context:
                 {context}
                 
                 Response requirements:
                 - First paragraph: Direct, comprehensive answer
-                - Subsequent sections: Break down key aspects using natural subheadings
-                - Include relevant details like dates/numbers when available
-                - Use bullet points or numbered lists where appropriate
-                - Never mention "web results" or sources"""
+                - Subsequent sections: Break down key aspects using subheadings
+                - Include relevant details
+                - Format the entire response in Markdown for proper headings, lists and emphasis"""
             else:
+                logger.warning("Web search requested but no results found")
                 prompt = user_input
         else:
+            logger.info("Using direct query without web search")
             prompt = user_input
 
         # Always include last 3 exchanges (6 messages) from conversation history
