@@ -110,16 +110,24 @@ def chat():
             search_query = user_input
             context, urls = chat_bot.process_web_search(search_query)
             if context and urls:
-                prompt = f"""Craft a detailed response to: {search_query}
-                
-                Context:
-                {context}
-                
-                Response requirements:
-                - First paragraph: Direct, comprehensive answer
-                - Subsequent sections: Break down key aspects using subheadings
-                - Include relevant details
-                - Format the entire response in Markdown for proper headings, lists and emphasis"""
+                prompt = f"""**Role**: Expert search assistant specializing in concise yet comprehensive answers.  
+                    **User Query**: "{search_query}"
+
+                    **Context** (max 3 most relevant points):  
+                    {context}
+
+                    **Response Framework**:  
+                    1. 🎯 **Direct Answer**: First paragraph answers query directly (<75 words)  
+                    2. 🔍 **Detail Control**:  
+                    - Default: 3-5 key bullet points with essential information  
+                    - If user says "detailed", "expand", or "explain": Use ## subheadings + paragraphs  
+                    3. 🔗 **Context Linking**:  
+                    - {'Acknowledge connection to previous query' if context else 'No context reference'}  
+                    - Highlight contradictions with: "Update: New data shows..."  
+                    4. ✨ **Format**:  
+                    - Always use markdown  
+                    - Prioritize: bold key terms, lists, tables when applicable  
+                    - Add "📌 Need more details? Ask to 'expand' any point" at end"""
             else:
                 prompt = user_input
         else:
@@ -130,7 +138,11 @@ def chat():
         
         # Create messages with explicit system message and context
         messages = [
-            SystemMessage(content="You are a helpful assistant. Maintain context from previous messages when relevant."),
+            SystemMessage(content="""You are a helpful assistant with these requirements:
+            1. For follow-up questions about a topic, reference information from previous messages
+            2. When new information conflicts with previous context, prioritize the new information
+            3. Stay focused on the current query while incorporating relevant past context
+            4. If unsure about connecting previous context, focus solely on the current query"""),
             *recent_conversation,
             HumanMessage(content=prompt)
         ]
