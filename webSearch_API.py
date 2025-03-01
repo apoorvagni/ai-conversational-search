@@ -14,6 +14,11 @@ import asyncio
 import aiohttp
 from concurrent.futures import ThreadPoolExecutor
 import time
+from sumy.parsers.plaintext import PlaintextParser
+from sumy.nlp.tokenizers import Tokenizer
+from sumy.summarizers.lsa import LsaSummarizer
+from sumy.nlp.stemmers import Stemmer
+from sumy.utils import get_stop_words
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -74,81 +79,58 @@ class WebSearchChat:
             logger.error(f"Error initializing WebSearchChat: {str(e)}")
             raise e
 
-    def fetch_and_parse_url(self, url):
-        """Custom method to fetch and parse URL content"""
-        try:
-            # Use session instead of requests.get
-            response = self.session.get(url, timeout=(10, 30))
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Remove unwanted elements
-            for element in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside', 'form', 'iframe', 'noscript']):
-                element.decompose()
-            
-            # First try to find article content
-            article = soup.find('article')
-            if article:
-                text = article.get_text(separator='\n', strip=True)
-                if len(text) > 100:
-                    return text[:4000]  # Increased max chars
-            
-            # If no article, look for main content
-            content_tags = soup.find_all(['main', 'div', 'p', 'section'])
-            text_content = []
-            total_length = 0
-            max_chars = 4000  # Increased from 2000
-            
-            for tag in content_tags:
-                text = tag.get_text(separator='\n', strip=True)
-                if text and len(text) > 50:  # Reduced minimum length
-                    text_content.append(text)
-                    total_length += len(text)
-                    if total_length >= max_chars:
-                        break
-            
-            return '\n'.join(text_content)[:max_chars] if text_content else ""
-        except Exception as e:
-            logger.error(f"Error fetching {url}: {str(e)}")
-            return ""
-
     def simple_summarize(self, text, max_sentences=5):
-        """Simple summarization without heavy dependencies"""
-        # Split into sentences using nltk's punkt tokenizer
+        """Enhanced summarization using sumy's LSA algorithm"""
         try:
-            sentences = nltk.sent_tokenize(text)
-            # Return first max_sentences sentences
-            return " ".join(sentences[:max_sentences])
+            logger.info(f"Starting summarization of text ({len(text)} characters)")
+            
+            # Initialize the LSA summarizer
+            parser = PlaintextParser.from_string(text, Tokenizer("english"))
+            stemmer = Stemmer("english")
+            summarizer = LsaSummarizer(stemmer)
+            summarizer.stop_words = get_stop_words("english")
+            
+            # Get summary sentences
+            summary_sentences = summarizer(parser.document, max_sentences)
+            summary = " ".join([str(sentence) for sentence in summary_sentences])
+            
+            logger.info(f"Summarization complete:")
+            logger.info(f"- Original length: {len(text)} characters")
+            logger.info(f"- Summary length: {len(summary)} characters")
+            logger.info(f"- Compression ratio: {(len(summary) / len(text)) * 100:.1f}%")
+            logger.info(f"- Sentences in summary: {len(summary_sentences)}")
+            
+            return summary if summary else text[:1000] + "..."
+            
         except Exception as e:
-            logger.error(f"Error in simple summarization: {str(e)}")
+            logger.error(f"Error in sumy summarization: {str(e)}")
             # Fallback to simple length-based truncation
+            logger.warning("Falling back to simple truncation")
             return text[:1000] + "..."
 
     async def fetch_url_async(self, session, url):
         try:
-            async with session.get(url, timeout=3) as response:  # Reduced timeout to 3 seconds
+            timeout = aiohttp.ClientTimeout(total=3, connect=1)
+            async with session.get(url, timeout=timeout) as response:
                 if response.status == 200:
                     html = await response.text()
-                    # Try to parse the content immediately to check if it's extractable
-                    soup = BeautifulSoup(html, 'html.parser')
-                    text = soup.get_text(separator='\n', strip=True)
-                    if text and len(text) > 100:  # Basic validation of content
+                    if len(html) > 500:
                         return url, html
-                    else:
-                        logger.warning(f"Skipping {url} - insufficient content")
-                        return url, None
-                else:
-                    logger.warning(f"Failed to fetch {url} - Status: {response.status}")
-                    return url, None
+                return url, None
         except Exception as e:
             logger.error(f"Error fetching {url}: {str(e)}")
             return url, None
 
     async def fetch_all_urls_async(self, urls):
-        async with aiohttp.ClientSession(headers=self.headers) as session:
+        connector = aiohttp.TCPConnector(limit=10)
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(
+            headers=self.headers, 
+            connector=connector,
+            timeout=timeout
+        ) as session:
             tasks = [self.fetch_url_async(session, url) for url in urls]
-            return await asyncio.gather(*tasks)
+            return await asyncio.gather(*tasks, return_exceptions=True)
 
     def process_content_parallel(self, url, html):
         if not html:
@@ -156,7 +138,7 @@ class WebSearchChat:
         
         soup = BeautifulSoup(html, 'html.parser')
         
-        # Remove all unwanted elements
+        # Remove unwanted elements
         unwanted_elements = [
             'script', 'style', 'nav', 'footer', 'header', 'aside', 
             'form', 'iframe', 'noscript', 'advertisement', 'menu',
@@ -166,59 +148,76 @@ class WebSearchChat:
         for element in soup.find_all(unwanted_elements):
             element.decompose()
         
-        # Remove elements with common advertising/navigation class names
-        for element in soup.find_all(class_=lambda x: x and any(word in str(x).lower() for word in [
-            'ad', 'ads', 'advertisement', 'banner', 'menu', 'nav', 'sidebar', 'footer', 'header',
-            'social', 'sharing', 'newsletter', 'subscription', 'cookie', 'popup'
-        ])):
-            element.decompose()
-
-        # First try to find the main article content
-        article = soup.find(['article', 'main'])
-        if article:
-            text = article.get_text(separator=' ', strip=True)
-        else:
-            # Fallback to finding content in paragraphs
-            paragraphs = soup.find_all('p')
-            text = ' '.join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 50)
-
-        # Clean up the text
-        text = ' '.join(text.split())  # Remove extra whitespace
-        text = text[:2000]  # Limit length
+        # Progressive content extraction
+        for container in ['article', 'main', 'div.content', 'div.article']:
+            main_content = soup.find(container)
+            if main_content:
+                text = main_content.get_text(separator='\n', strip=True)
+                if len(text) > 100:
+                    return {
+                        "content": text[:4000],
+                        "source": url
+                    }
         
-        # Create a structured result
-        result = {
-            "content": text,
+        # Final fallback to paragraphs
+        paragraphs = soup.find_all('p')
+        text = ' '.join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 50)
+        
+        return {
+            "content": text[:4000] if text else "",
             "source": url
         }
-        
-        return result
 
-    def process_web_search(self, query: str, num_results: int = 5):
+    def process_web_search(self, query: str, num_results: int = 10):
         try:
             logger.info(f"Processing web search for: {query}")
-            search_results = self.search.run(query)
+            all_urls = set()
+            search_queries = [
+                query,
+                f"{query} latest",
+                f"{query} detailed"
+            ]
             
-            if not isinstance(search_results, str):
-                return None, None
+            # Track search attempts and URLs found
+            for idx, search_query in enumerate(search_queries[:2]):
+                if len(all_urls) >= num_results:
+                    break
+                    
+                logger.info(f"Search attempt {idx + 1} with query: {search_query}")
+                search_results = self.search.run(search_query)
+                if not isinstance(search_results, str):
+                    logger.warning(f"Search attempt {idx + 1} failed: Invalid results")
+                    continue
 
-            # Extract URLs
-            entries = search_results.split('link: ')
-            urls = []
-            for entry in entries[1:]:
-                url = entry.split('\n')[0].split(',')[0].strip()
-                if url and len(urls) < num_results:
-                    urls.append(url)
+                # Extract URLs from this search attempt
+                new_urls = set()
+                entries = search_results.split('link: ')
+                for entry in entries[1:]:
+                    url = entry.split('\n')[0].split(',')[0].strip()
+                    if url:
+                        new_urls.add(url)
+                
+                all_urls.update(new_urls)
+                logger.info(f"Search attempt {idx + 1} found {len(new_urls)} new URLs. Total unique URLs: {len(all_urls)}")
 
+            urls = list(all_urls)[:num_results * 2]
+            logger.info(f"Selected {len(urls)} URLs for processing")
+            
             # Fetch and process URLs
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             results = loop.run_until_complete(self.fetch_all_urls_async(urls))
             loop.close()
 
-            # Process only successful results
+            # Log fetch results
             valid_results = [(url, html) for url, html in results if html is not None]
-            
+            failed_urls = [url for url, html in results if html is None]
+            logger.info(f"URL fetching complete:")
+            logger.info(f"- Successfully fetched: {len(valid_results)} URLs")
+            logger.info(f"- Failed to fetch: {len(failed_urls)} URLs")
+            if failed_urls:
+                logger.debug(f"Failed URLs: {failed_urls}")
+
             if not valid_results:
                 logger.warning("No valid content found from any URLs")
                 return None, None
@@ -230,19 +229,33 @@ class WebSearchChat:
                     valid_results
                 ))
             
-            # Filter out None results
-            processed_results = [r for r in processed_results if r]
+            # Log content processing results
+            processed_results = [r for r in processed_results if r][:num_results]
+            logger.info(f"Content processing complete:")
+            logger.info(f"- Successfully processed: {len(processed_results)} documents")
+            
             if not processed_results:
+                logger.warning("No valid content after processing")
                 return None, None
 
-            # Format the context by combining only the content
-            context = "\n\n".join(result['content'] for result in processed_results)
+            # Log content lengths
+            for idx, result in enumerate(processed_results):
+                content_length = len(result['content'])
+                logger.debug(f"Document {idx + 1} from {result['source']}: {content_length} characters")
+
+            # Combine and summarize content
+            combined_content = "\n\n".join(result['content'] for result in processed_results)
+            logger.info(f"Combined content length: {len(combined_content)} characters")
+            
+            summarized_content = self.simple_summarize(combined_content, max_sentences=10)
+            logger.info(f"Summarized content length: {len(summarized_content)} characters")
+            
             successful_urls = [result['source'] for result in processed_results]
+            logger.info(f"Final results:")
+            logger.info(f"- URLs used in summary: {len(successful_urls)}")
+            logger.debug(f"- Final URLs: {successful_urls}")
 
-            logger.info(f"Found {len(successful_urls)} valid URLs")
-            logger.info(f"Processed {len(processed_results)} results")
-
-            return context, successful_urls
+            return summarized_content, successful_urls
 
         except Exception as e:
             logger.error(f"Error in web search processing: {str(e)}", exc_info=True)
@@ -257,72 +270,6 @@ class WebSearchChat:
         if len(self.conversation) > 6:
             self.conversation = self.conversation[-6:]
 
-    def chat(self):
-        print("Web-enhanced Chat started (type 'exit' to end, 'search: your query' to search web)")
-        print("-" * 50)
-
-        while True:
-            try:
-                user_input = input("\nYou: ").strip()
-                if user_input.lower() == 'exit':
-                    print("\nChat ended. Goodbye!")
-                    break
-
-                current_urls = None
-                if user_input.lower().startswith("search: "):
-                    search_query = user_input[8:].strip()
-                    print("\nSearching the web...", end=" ")
-                    context, urls = self.process_web_search(search_query)
-                    current_urls = urls
-                    if context and urls:
-                        print("\nFound relevant information from:", ", ".join(urls))
-                        prompt = f"""Based on the following web search results, please provide a detailed analysis of: {search_query}
-
-                        Web Search Context:
-                        {context}
-
-                        Please provide a comprehensive answer that:
-                        1. Covers all major points from the sources
-                        2. Includes specific details and examples
-                        3. Maintains factual accuracy"""
-                    else:
-                        prompt = user_input
-                else:
-                    prompt = user_input
-
-                # Create messages list with conversation history
-                messages = [
-                    SystemMessage(content="You are a helpful assistant. Use previous messages for context when relevant."),
-                    *self.conversation,
-                    HumanMessage(content=prompt)
-                ]
-
-                print("\nAssistant:", end=" ", flush=True)
-                
-                # Modified to use LangChain streaming format
-                full_response = ""
-                for chunk in self.client.stream(messages):
-                    if chunk.content:
-                        print(chunk.content, end="", flush=True)
-                        full_response += chunk.content
-
-                print()  # New line after response
-
-                if full_response:
-                    self.append_to_conversation('user', prompt)
-                    self.append_to_conversation('assistant', full_response)
-
-                if current_urls:
-                    print("\nSources:")
-                    for idx, url in enumerate(current_urls, 1):
-                        print(f"[{idx}] {url}")
-                    print()
-
-            except Exception as e:
-                logger.error(f"Error in chat loop: {str(e)}")
-                print("\nAn error occurred. Please try again.")
-                continue
-    
     # Classify if the query needs web search
     def classify_query_needs_search(self, query: str) -> bool:
         """

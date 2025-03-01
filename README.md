@@ -29,15 +29,20 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 pip install gunicorn
-nohup gunicorn -w 4 -b 0.0.0.0:5000 app:app &
-
- 
-- This command starts the app with 4 worker processes, binding to all interfaces on port 5000. Adjust the number of workers and port as needed.
-
-
 
 export MISTRAL_API_KEY=your_api_key_here
 export USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+### Stop the server
+
+kill -9 $(pgrep -f "gunicorn -w 4 -b 0.0.0.0:5000 app:app")
+
+### Start the server
+
+nohup gunicorn -w 4 -b 0.0.0.0:5000 app:app &
+
+This command starts the app with 4 worker processes, binding to all interfaces on port 5000. Adjust the number of workers and port as needed.
+
 
 
 #TODO
